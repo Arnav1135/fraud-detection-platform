@@ -4,6 +4,7 @@ import { OpenAIFraudExplainer } from './infrastructure/ai/OpenAIFraudExplainer';
 import { MetricsService } from './infrastructure/telemetry/MetricsService';
 import { FraudDetectionEngine, Transaction } from './core/algorithms/FraudDetectionEngine';
 import { TokenBucketRateLimiter } from './core/algorithms/TokenBucketRateLimiter';
+import { PrismaTransactionRepository } from './infrastructure/persistence/PrismaTransactionRepository';
 import { authRouter } from './infrastructure/api/AuthRouter';
 import { authenticate, authorize, Role } from './infrastructure/auth/JwtAuthMiddleware';
 import express, { Request, Response } from 'express';
@@ -19,6 +20,7 @@ async function bootstrap() {
     const aiService = new OpenAIFraudExplainer();
     const metricsService = new MetricsService();
     const rateLimiter = new TokenBucketRateLimiter(cacheService, 100, 10);
+    const dbRepository = new PrismaTransactionRepository();
 
     await messageBroker.connect();
 
@@ -26,21 +28,18 @@ async function bootstrap() {
 
     // 2. Setup Express & HTTP Server
     const app = express();
-    app.use(express.json()); // Parse JSON body
+    app.use(express.json());
     const server = http.createServer(app);
 
-    // ── Public Routes
     app.get('/health', (req, res) => res.send('OK'));
-    app.use('/api/auth', authRouter); // Exposes /api/auth/login
+    app.use('/api/auth', authRouter);
 
-    // ── Protected Routes (RBAC)
     app.get('/metrics', authenticate, authorize(Role.ADMIN), async (req: Request, res: Response) => {
         res.set('Content-Type', 'text/plain');
         res.send(await metricsService.getMetrics());
     });
 
     app.post('/api/transactions/ingest', authenticate, async (req: Request, res: Response) => {
-        // Protect API with Redis-backed Token Bucket Rate Limiter
         const clientId = (req as any).user.userId;
         const limit = await rateLimiter.consume(clientId);
         
@@ -56,19 +55,20 @@ async function bootstrap() {
             return;
         }
 
-        // Push directly to Kafka (Ingestion Layer)
+        // Persist raw transaction to Postgres
+        await dbRepository.saveTransaction(tx).catch(e => console.error("DB Error:", e.message));
+
         await messageBroker.publish('transactions.live', tx);
         res.status(202).json({ status: 'Accepted', transactionId: tx.id });
     });
 
-    // 3. Setup Real-time WebSocket Server for SOC Dashboard
+    // 3. Setup WebSocket Server
     const wss = new WebSocketServer({ server });
     const clients = new Set<WebSocket>();
 
     wss.on('connection', (ws) => {
-        console.log('🔌 New Security Analyst connected to Live Dashboard.');
         clients.add(ws);
-        ws.send(JSON.stringify({ type: 'SYSTEM_READY', message: 'Connected to Fraud Engine Stream' }));
+        ws.send(JSON.stringify({ type: 'SYSTEM_READY' }));
         ws.on('close', () => clients.delete(ws));
     });
 
@@ -76,11 +76,14 @@ async function bootstrap() {
         console.log('✅ Fraud Engine Core & API Server running on port 3000');
     });
 
-    // 4. Start consuming transaction stream from Kafka (Worker Layer)
+    // 4. Kafka Consumer
     await messageBroker.subscribe('transactions.live', async (tx: Transaction) => {
         const alert = await engine.analyzeTransaction(tx);
         
         if (alert) {
+            // Persist fraud alert to Postgres
+            await dbRepository.saveFraudAlert(alert).catch(e => console.error("DB Error:", e.message));
+
             const payload = JSON.stringify({ type: 'FRAUD_ALERT', data: alert });
             for (const client of clients) {
                 if (client.readyState === WebSocket.OPEN) {
