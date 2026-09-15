@@ -10,6 +10,11 @@ import { authenticate, authorize, Role } from './infrastructure/auth/JwtAuthMidd
 import express, { Request, Response } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
+import cors from 'cors';
+import { ApolloServer } from '@apollo/server';
+import { expressMiddleware } from '@apollo/server/express4';
+import { typeDefs } from './infrastructure/graphql/typeDefs';
+import { resolvers } from './infrastructure/graphql/resolvers';
 
 async function bootstrap() {
     console.log('🚀 Bootstrapping Fraud Detection Platform (Architect / L7 Level)...');
@@ -28,6 +33,7 @@ async function bootstrap() {
 
     // 2. Setup Express & HTTP Server
     const app = express();
+    app.use(cors());
     app.use(express.json());
     const server = http.createServer(app);
 
@@ -55,14 +61,18 @@ async function bootstrap() {
             return;
         }
 
-        // Persist raw transaction to Postgres
         await dbRepository.saveTransaction(tx).catch(e => console.error("DB Error:", e.message));
-
         await messageBroker.publish('transactions.live', tx);
         res.status(202).json({ status: 'Accepted', transactionId: tx.id });
     });
 
-    // 3. Setup WebSocket Server
+    // 3. Setup GraphQL API (Apollo Server)
+    const apolloServer = new ApolloServer({ typeDefs, resolvers });
+    await apolloServer.start();
+    // In production, you would wrap this expressMiddleware with authentication
+    app.use('/graphql', expressMiddleware(apolloServer));
+
+    // 4. Setup WebSocket Server
     const wss = new WebSocketServer({ server });
     const clients = new Set<WebSocket>();
 
@@ -74,14 +84,14 @@ async function bootstrap() {
 
     server.listen(3000, () => {
         console.log('✅ Fraud Engine Core & API Server running on port 3000');
+        console.log('🚀 GraphQL Playground available at http://localhost:3000/graphql');
     });
 
-    // 4. Kafka Consumer
+    // 5. Kafka Consumer
     await messageBroker.subscribe('transactions.live', async (tx: Transaction) => {
         const alert = await engine.analyzeTransaction(tx);
         
         if (alert) {
-            // Persist fraud alert to Postgres
             await dbRepository.saveFraudAlert(alert).catch(e => console.error("DB Error:", e.message));
 
             const payload = JSON.stringify({ type: 'FRAUD_ALERT', data: alert });
