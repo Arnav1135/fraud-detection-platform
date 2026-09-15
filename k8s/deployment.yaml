@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-engine-deployment
+  labels:
+    app: fraud-engine
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fraud-engine
+  template:
+    metadata:
+      labels:
+        app: fraud-engine
+    spec:
+      containers:
+      - name: fraud-engine
+        image: fraud-engine:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: fraud-secrets
+              key: redis-url
+        - name: KAFKA_BROKER
+          valueFrom:
+            secretKeyRef:
+              name: fraud-secrets
+              key: kafka-broker
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
