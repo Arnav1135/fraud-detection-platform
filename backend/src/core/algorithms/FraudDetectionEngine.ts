@@ -1,9 +1,5 @@
-/**
- * FraudDetectionEngine.ts
- * 
- * Core algorithmic engine demonstrating O(1) time complexity fraud detection
- * using advanced HashMap techniques.
- */
+import { ICacheService } from '../interfaces/ICacheService';
+import { IMessageBroker } from '../interfaces/IMessageBroker';
 
 export interface Transaction {
     id: string;
@@ -21,43 +17,56 @@ export interface FraudAlert {
     isBlocked: boolean;
 }
 
+/**
+ * FraudDetectionEngine (SDE-3 Upgraded)
+ * 
+ * Demonstrates:
+ * 1. Clean Architecture (Use Cases / Core Logic isolated from Infrastructure)
+ * 2. Dependency Injection (ICacheService, IMessageBroker)
+ * 3. O(1) Redis-backed Sliding Window & Duplicate Detection
+ */
 export class FraudDetectionEngine {
-    // Sliding window HashMaps (simulating Redis/In-memory cache)
-    // Key: userId, Value: Array of recent transactions
-    private userTransactionHistory: Map<string, Transaction[]> = new Map();
-    
-    // Key: idempotency hash (userId + amount + recipientId), Value: timestamp
-    private exactDuplicateMap: Map<string, number> = new Map();
+    private readonly SUSPICIOUS_PAIR_THRESHOLD = 10000;
+    private readonly TIME_WINDOW_SEC = 5 * 60; // 5 minutes
 
-    private readonly SUSPICIOUS_PAIR_THRESHOLD = 10000; // e.g., $10,000 reporting threshold
-    private readonly TIME_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    constructor(
+        private readonly cache: ICacheService,
+        private readonly broker: IMessageBroker
+    ) {}
 
     /**
-     * Process a transaction stream in O(1) to O(k) time where k is recent transactions
+     * Process a transaction stream.
+     * Uses async operations to talk to the distributed cache (Redis).
      */
-    public analyzeTransaction(tx: Transaction): FraudAlert | null {
-        this.cleanupOldEntries(tx.timestamp);
+    public async analyzeTransaction(tx: Transaction): Promise<FraudAlert | null> {
+        let alert: FraudAlert | null = null;
 
-        // 1. O(1) Duplicate Payment Prevention
-        const dupHash = `${tx.userId}-${tx.amount}-${tx.recipientId}`;
-        if (this.exactDuplicateMap.has(dupHash)) {
-            return {
+        // 1. O(1) Exact Duplicate Payment Detection via Distributed Cache
+        const dupHash = `dup:${tx.userId}:${tx.amount}:${tx.recipientId}`;
+        const isDuplicate = await this.cache.has(dupHash);
+        
+        if (isDuplicate) {
+            alert = {
                 transactionId: tx.id,
                 riskScore: 99,
-                reason: "Exact duplicate payment detected within time window.",
+                reason: "Exact duplicate payment detected across distributed nodes.",
                 isBlocked: true
             };
+            await this.publishAlert(alert);
+            return alert;
         }
-        this.exactDuplicateMap.set(dupHash, tx.timestamp);
 
-        // 2. O(n) -> O(1) Suspicious Pair Detection (The "Two Sum" Implementation)
-        // Detect if this transaction + a recent transaction = exactly the threshold
-        const history = this.userTransactionHistory.get(tx.userId) || [];
+        // Mark this transaction in cache to prevent immediate duplicates
+        await this.cache.set(dupHash, "1", this.TIME_WINDOW_SEC);
+
+        // 2. Suspicious Pair Detection (Distributed "Two Sum")
+        const historyKey = `history:${tx.userId}`;
+        const rawHistory = await this.cache.getList(historyKey);
         
-        // Target we are looking for in recent history
+        const history: Transaction[] = rawHistory.map(item => JSON.parse(item));
         const complementAmount = this.SUSPICIOUS_PAIR_THRESHOLD - tx.amount;
-        
-        // We use a temporary map for O(1) lookup of the complement in recent history
+
+        // O(1) Lookup in recent history
         const recentAmountsMap = new Map<number, Transaction>();
         for (const pastTx of history) {
             recentAmountsMap.set(pastTx.amount, pastTx);
@@ -65,50 +74,24 @@ export class FraudDetectionEngine {
 
         if (recentAmountsMap.has(complementAmount)) {
             const pairedTx = recentAmountsMap.get(complementAmount)!;
-            return {
+            alert = {
                 transactionId: tx.id,
                 riskScore: 85,
-                reason: `Suspicious paired transaction detected. Combined with Tx ${pairedTx.id}, hits exact evasion threshold.`,
-                isBlocked: false // Flag for manual review
+                reason: `Suspicious paired transaction. Combined with Tx ${pairedTx.id}, hits exact reporting threshold.`,
+                isBlocked: false
             };
+            await this.publishAlert(alert);
         }
 
-        // 3. Velocity Checks (Rapid repeated transactions)
-        if (history.length >= 5) { // More than 5 transactions in 5 minutes
-            return {
-                transactionId: tx.id,
-                riskScore: 90,
-                reason: "High velocity transaction anomaly (Account Takeover risk).",
-                isBlocked: true
-            };
-        }
+        // 3. Update distributed history and reset TTL
+        await this.cache.pushToList(historyKey, JSON.stringify(tx));
+        await this.cache.expire(historyKey, this.TIME_WINDOW_SEC);
 
-        // Update history
-        history.push(tx);
-        this.userTransactionHistory.set(tx.userId, history);
-
-        return null; // Clean transaction
+        return alert;
     }
 
-    /**
-     * Helper to simulate TTL expiry in a sliding window
-     */
-    private cleanupOldEntries(currentTimestamp: number) {
-        // In a real distributed system, Redis TTL handles this automatically.
-        // This is a naive in-memory cleanup for demonstration.
-        for (const [hash, time] of this.exactDuplicateMap.entries()) {
-            if (currentTimestamp - time > this.TIME_WINDOW_MS) {
-                this.exactDuplicateMap.delete(hash);
-            }
-        }
-        
-        for (const [userId, txs] of this.userTransactionHistory.entries()) {
-            const validTxs = txs.filter(tx => currentTimestamp - tx.timestamp <= this.TIME_WINDOW_MS);
-            if (validTxs.length === 0) {
-                this.userTransactionHistory.delete(userId);
-            } else {
-                this.userTransactionHistory.set(userId, validTxs);
-            }
-        }
+    private async publishAlert(alert: FraudAlert) {
+        // Publish to Kafka for asynchronous downstream processing (e.g., blocking the account)
+        await this.broker.publish('fraud-alerts', alert);
     }
 }

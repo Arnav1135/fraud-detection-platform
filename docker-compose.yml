@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # 1. Redis: Distributed Cache (For O(1) Sliding Window)
+  # ----------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: fraud_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - fraud_network
+
+  # ----------------------------------------------------
+  # 2. Zookeeper & Kafka: Event Streaming
+  # ----------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: fraud_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - fraud_network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: fraud_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - fraud_network
+
+  # ----------------------------------------------------
+  # 3. PostgreSQL: Persistent Storage
+  # ----------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: fraud_postgres
+    environment:
+      POSTGRES_USER: fraud_admin
+      POSTGRES_PASSWORD: secure_password_123
+      POSTGRES_DB: fraud_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - fraud_network
+
+  # ----------------------------------------------------
+  # 4. Node.js Engine (Our Application)
+  # ----------------------------------------------------
+  engine:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fraud_engine
+    depends_on:
+      - redis
+      - kafka
+      - postgres
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKER=kafka:29092
+      - POSTGRES_URL=postgres://fraud_admin:secure_password_123@postgres:5432/fraud_db
+    ports:
+      - "3000:3000"
+    networks:
+      - fraud_network
+
+networks:
+  fraud_network:
+    driver: bridge
+
+volumes:
+  pgdata:
