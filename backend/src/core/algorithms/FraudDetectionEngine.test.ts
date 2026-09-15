@@ -1,54 +1,107 @@
-import { FraudDetectionEngine, Transaction } from './FraudDetectionEngine';
+import { BloomFilter } from './BloomFilter';
+import { LRUCache } from './LRUCache';
+import { GraphFraudAnalyzer } from './GraphFraudAnalyzer';
+import { TokenBucketRateLimiter } from './TokenBucketRateLimiter';
 
-// Simple test runner for demonstration without needing Jest installed
-function runTests() {
-    console.log("🚀 Running Fraud Detection Engine Tests...\n");
-    
-    const engine = new FraudDetectionEngine();
-    const baseTime = Date.now();
+// ─── Bloom Filter Tests ──────────────────────────────────────────────────────
+function testBloomFilter() {
+    console.log('\n📋 Bloom Filter Tests');
+    const bf = new BloomFilter(1000, 0.01);
 
-    // Test 1: Clean Transaction
-    const tx1: Transaction = {
-        id: "tx-001", userId: "user-123", amount: 150, 
-        timestamp: baseTime, deviceId: "device-1", recipientId: "merchant-A"
-    };
-    
-    const result1 = engine.analyzeTransaction(tx1);
-    console.log(`Test 1 (Clean Tx): ${result1 === null ? "✅ PASS" : "❌ FAIL"}`);
+    bf.add('user-123:500:merchant-A');
+    bf.add('user-456:1000:merchant-B');
 
-    // Test 2: O(1) Exact Duplicate Payment
-    const tx2: Transaction = {
-        id: "tx-002", userId: "user-123", amount: 150, 
-        timestamp: baseTime + 1000, deviceId: "device-1", recipientId: "merchant-A"
-    };
-    
-    const result2 = engine.analyzeTransaction(tx2);
-    if (result2 && result2.isBlocked && result2.reason.includes("duplicate")) {
-        console.log(`Test 2 (Duplicate Block): ✅ PASS -> Score: ${result2.riskScore}`);
-    } else {
-        console.log(`Test 2 (Duplicate Block): ❌ FAIL`);
-    }
+    const r1 = bf.mightContain('user-123:500:merchant-A');
+    console.log(`  Known item (should be true):   ${r1 === true ? '✅' : '❌'} ${r1}`);
 
-    // Test 3: "Two Sum" Suspicious Pair Detection ($4500 + $5500 = $10000)
-    const tx3: Transaction = {
-        id: "tx-003", userId: "user-999", amount: 4500, 
-        timestamp: baseTime + 2000, deviceId: "device-2", recipientId: "merchant-B"
-    };
-    engine.analyzeTransaction(tx3); // Should be clean initially
-    
-    const tx4: Transaction = {
-        id: "tx-004", userId: "user-999", amount: 5500, 
-        timestamp: baseTime + 3000, deviceId: "device-2", recipientId: "merchant-C"
-    };
-    const result4 = engine.analyzeTransaction(tx4);
-    
-    if (result4 && result4.reason.includes("Suspicious paired transaction")) {
-        console.log(`Test 3 (Two Sum Evader): ✅ PASS -> Flagged for review (Score: ${result4.riskScore})`);
-    } else {
-        console.log(`Test 3 (Two Sum Evader): ❌ FAIL`);
-    }
+    const r2 = bf.mightContain('user-999:9999:merchant-Z');
+    console.log(`  Unknown item (likely false):   ${r2 === false ? '✅' : '⚠️ (false positive)'} ${r2}`);
 
-    console.log("\nAll tests completed.");
+    console.log(`  Memory usage: ${bf.getMemoryUsageBytes()} bytes`);
 }
 
-runTests();
+// ─── LRU Cache Tests ─────────────────────────────────────────────────────────
+function testLRUCache() {
+    console.log('\n📋 LRU Cache Tests (capacity = 3)');
+    const cache = new LRUCache<string, number>(3);
+
+    cache.put('a', 1);
+    cache.put('b', 2);
+    cache.put('c', 3);
+
+    console.log(`  get('a') = ${cache.get('a')} (expected 1) ${cache.get('a') === 1 ? '✅' : '❌'}`);
+
+    // 'b' is now LRU — adding 'd' should evict 'b'
+    cache.put('d', 4);
+    const evicted = cache.get('b');
+    console.log(`  get('b') after eviction = ${evicted} (expected null) ${evicted === null ? '✅' : '❌'}`);
+    console.log(`  get('d') = ${cache.get('d')} (expected 4) ${cache.get('d') === 4 ? '✅' : '❌'}`);
+    console.log(`  Hit ratio: ${(cache.getHitRatio() * 100).toFixed(1)}%`);
+}
+
+// ─── Graph Fraud Analyzer Tests ───────────────────────────────────────────────
+function testGraphFraudAnalyzer() {
+    console.log('\n📋 Graph DFS Cycle Detection Tests');
+    const graph = new GraphFraudAnalyzer();
+
+    // Simulate a money mule ring: A → B → C → A
+    graph.addTransaction('user-A', 'user-B');
+    graph.addTransaction('user-B', 'user-C');
+    graph.addTransaction('user-C', 'user-A'); // Closes the ring
+
+    const result = graph.detectCycle('user-A');
+    console.log(`  Circular ring detected: ${result.detected ? '✅' : '❌'}`);
+    if (result.detected) {
+        console.log(`  Ring path: ${result.cycle?.join(' → ')}`);
+    }
+
+    // Clean path: X → Y (no cycle)
+    const graph2 = new GraphFraudAnalyzer();
+    graph2.addTransaction('user-X', 'user-Y');
+    const result2 = graph2.detectCycle('user-X');
+    console.log(`  Clean path (no cycle): ${!result2.detected ? '✅' : '❌'}`);
+}
+
+// ─── Rate Limiter Tests ───────────────────────────────────────────────────────
+async function testRateLimiter() {
+    console.log('\n📋 Token Bucket Rate Limiter Tests');
+
+    // Mock cache for testing
+    const mockStore = new Map<string, string>();
+    const mockCache = {
+        get: async (k: string) => mockStore.get(k) ?? null,
+        set: async (k: string, v: string) => { mockStore.set(k, v); },
+        has: async (k: string) => mockStore.has(k),
+        pushToList: async () => {},
+        getList: async () => [],
+        expire: async () => {},
+    };
+
+    const limiter = new TokenBucketRateLimiter(mockCache as any, 3, 1);
+
+    const r1 = await limiter.consume('client-1');
+    const r2 = await limiter.consume('client-1');
+    const r3 = await limiter.consume('client-1');
+    const r4 = await limiter.consume('client-1'); // Should be denied
+
+    console.log(`  Request 1 (allowed): ${r1.allowed ? '✅' : '❌'}`);
+    console.log(`  Request 2 (allowed): ${r2.allowed ? '✅' : '❌'}`);
+    console.log(`  Request 3 (allowed): ${r3.allowed ? '✅' : '❌'}`);
+    console.log(`  Request 4 (blocked): ${!r4.allowed ? '✅' : '❌'} | Retry after: ${r4.retryAfterMs}ms`);
+}
+
+// ─── Run all tests ────────────────────────────────────────────────────────────
+async function runAllTests() {
+    console.log('🚀 Running Full Algorithm Test Suite...');
+    console.log('='.repeat(50));
+
+    testBloomFilter();
+    testLRUCache();
+    testGraphFraudAnalyzer();
+    await testRateLimiter();
+
+    console.log('\n' + '='.repeat(50));
+    console.log('✅ All algorithm tests complete.\n');
+}
+
+runAllTests().catch(console.error);
