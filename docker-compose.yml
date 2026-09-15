@@ -60,7 +60,20 @@ services:
       - fraud_network
 
   # ----------------------------------------------------
-  # 4. Node.js Engine (Our Application)
+  # 4. AI Machine Learning Engine (Python/FastAPI)
+  # ----------------------------------------------------
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: fraud_ai_engine
+    ports:
+      - "8000:8000"
+    networks:
+      - fraud_network
+
+  # ----------------------------------------------------
+  # 5. Node.js Engine (Our Application)
   # ----------------------------------------------------
   engine:
     build:
@@ -71,11 +84,13 @@ services:
       - redis
       - kafka
       - postgres
+      - ai-engine
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
       - KAFKA_BROKER=kafka:29092
       - POSTGRES_URL=postgres://fraud_admin:secure_password_123@postgres:5432/fraud_db
+      - AI_ENGINE_URL=http://ai-engine:8000
     ports:
       - "3000:3000"
     networks:
