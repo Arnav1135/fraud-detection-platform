@@ -1,4 +1,4 @@
-import { Transaction, FraudAlert } from '../../algorithms/FraudDetectionEngine';
+import { Transaction, FraudAlert } from '../algorithms/FraudDetectionEngine';
 
 export interface ITransactionRepository {
     saveTransaction(tx: Transaction): Promise<void>;

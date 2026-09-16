@@ -11,7 +11,7 @@ export const resolvers = {
         orderBy: { timestamp: 'desc' },
         take: limit,
       });
-      return records.map(r => ({
+      return records.map((r: any) => ({
         ...r,
         timestamp: r.timestamp.toISOString(),
       }));
@@ -23,7 +23,7 @@ export const resolvers = {
         orderBy: { createdAt: 'desc' },
         take: limit,
       });
-      return records.map(r => ({
+      return records.map((r: any) => ({
         ...r,
         createdAt: r.createdAt.toISOString(),
       }));

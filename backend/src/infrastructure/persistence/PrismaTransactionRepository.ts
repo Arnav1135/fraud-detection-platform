@@ -42,7 +42,7 @@ export class PrismaTransactionRepository implements ITransactionRepository {
             take: limit
         });
 
-        return records.map(r => ({
+        return records.map((r: any) => ({
             id: r.id,
             userId: r.userId,
             amount: r.amount,

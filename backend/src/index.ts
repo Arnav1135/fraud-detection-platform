@@ -13,6 +13,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
 import cors from 'cors';
 import { ApolloServer } from '@apollo/server';
+// @ts-ignore
 import { expressMiddleware } from '@apollo/server/express4';
 import { typeDefs } from './infrastructure/graphql/typeDefs';
 import { resolvers } from './infrastructure/graphql/resolvers';
