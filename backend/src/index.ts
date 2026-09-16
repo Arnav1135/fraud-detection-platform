@@ -5,6 +5,7 @@ import { MetricsService } from './infrastructure/telemetry/MetricsService';
 import { FraudDetectionEngine, Transaction } from './core/algorithms/FraudDetectionEngine';
 import { TokenBucketRateLimiter } from './core/algorithms/TokenBucketRateLimiter';
 import { PrismaTransactionRepository } from './infrastructure/persistence/PrismaTransactionRepository';
+import { ElasticSearchService } from './infrastructure/search/ElasticSearchService';
 import { authRouter } from './infrastructure/api/AuthRouter';
 import { authenticate, authorize, Role } from './infrastructure/auth/JwtAuthMiddleware';
 import express, { Request, Response } from 'express';
@@ -26,6 +27,7 @@ async function bootstrap() {
     const metricsService = new MetricsService();
     const rateLimiter = new TokenBucketRateLimiter(cacheService, 100, 10);
     const dbRepository = new PrismaTransactionRepository();
+    const searchService = new ElasticSearchService();
 
     await messageBroker.connect();
 
@@ -61,7 +63,12 @@ async function bootstrap() {
             return;
         }
 
-        await dbRepository.saveTransaction(tx).catch(e => console.error("DB Error:", e.message));
+        // Parallel async persistence
+        await Promise.all([
+            dbRepository.saveTransaction(tx).catch(e => console.error("DB Error:", e.message)),
+            searchService.indexTransaction(tx).catch(e => console.error("Search Error:", e.message))
+        ]);
+
         await messageBroker.publish('transactions.live', tx);
         res.status(202).json({ status: 'Accepted', transactionId: tx.id });
     });

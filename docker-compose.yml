@@ -73,6 +73,21 @@ services:
       - fraud_network
 
   # ----------------------------------------------------
+  # 6. ElasticSearch: Fast Text Searching
+  # ----------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: fraud_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    networks:
+      - fraud_network
+
+  # ----------------------------------------------------
   # 5. Node.js Engine (Our Application)
   # ----------------------------------------------------
   engine:
@@ -85,12 +100,14 @@ services:
       - kafka
       - postgres
       - ai-engine
+      - elasticsearch
     environment:
       - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
       - KAFKA_BROKER=kafka:29092
       - POSTGRES_URL=postgres://fraud_admin:secure_password_123@postgres:5432/fraud_db
       - AI_ENGINE_URL=http://ai-engine:8000
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
     ports:
       - "3000:3000"
     networks:

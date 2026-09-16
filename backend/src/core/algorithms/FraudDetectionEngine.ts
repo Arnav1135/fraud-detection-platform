@@ -6,6 +6,8 @@ import { IMessageBroker } from '../interfaces/IMessageBroker';
 import { IAIService } from '../interfaces/IAIService';
 import { MetricsService } from '../../infrastructure/telemetry/MetricsService';
 
+import { DynamicFraudRulesEngine } from './DynamicFraudRulesEngine';
+
 export interface Transaction {
     id: string;
     userId: string;
@@ -24,28 +26,14 @@ export interface FraudAlert {
     detectedBy: string;
 }
 
-/**
- * FraudDetectionEngine — Architect / L7 Level
- *
- * Multi-layer Detection Pipeline:
- *   L1: In-process Bloom Filter  → O(k) — eliminates ~95% of clean txns before any network call
- *   L2: In-process LRU Cache     → O(1) — warm cache for hot duplicate checks
- *   L3: Redis Sliding Window     → O(1) distributed — cross-node duplicate & "Two Sum" detection
- *   L4: Graph DFS Cycle Detector → O(V+E) — catches circular layering / money mule rings
- *   L5: AI Explanation Engine    → async LLM call for human-readable analyst reports
- */
 export class FraudDetectionEngine {
     private readonly PAIR_THRESHOLD = 10_000;
-    private readonly TIME_WINDOW_SEC = 300; // 5 minutes
+    private readonly TIME_WINDOW_SEC = 300; 
 
-    // L1 — Bloom Filter (in-process, zero network, probabilistic)
     private bloomFilter = new BloomFilter(1_000_000, 0.001);
-
-    // L2 — LRU Cache (in-process exact match, 10k slots)
     private lruCache = new LRUCache<string, boolean>(10_000);
-
-    // L4 — Graph-based circular transfer detector
     private graphAnalyzer = new GraphFraudAnalyzer();
+    private rulesEngine = new DynamicFraudRulesEngine();
 
     constructor(
         private readonly cache: ICacheService,
@@ -59,6 +47,22 @@ export class FraudDetectionEngine {
         this.metrics.transactionsProcessed.inc();
 
         try {
+            // ── L0: Dynamic Business Rules ───────────────────────────────
+            const ruleResults = await this.rulesEngine.evaluate(tx);
+            if (ruleResults.length > 0) {
+                const highestRisk = ruleResults.reduce((prev, current) => 
+                    (prev.score || 0) > (current.score || 0) ? prev : current
+                );
+                
+                return await this.raiseAlert({
+                    transactionId: tx.id,
+                    riskScore: highestRisk.score || 80,
+                    reason: `Business Rule Triggered: ${highestRisk.reason}`,
+                    isBlocked: (highestRisk.score || 0) >= 90,
+                    detectedBy: 'DynamicRulesEngine'
+                });
+            }
+
             const dupKey = `${tx.userId}:${tx.amount}:${tx.recipientId}`;
 
             // ── L1: Bloom Filter ──────────────────────────────────────────
